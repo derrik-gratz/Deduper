@@ -1,0 +1,234 @@
+Deduper assignment pseudocode
+Derrik Gratz Fall 2020
+
+
+____________
+The problem
+____________
+
+Sequencing library prep attempts to get a balanced view of the sequences represented in the sample. However, some sequences can be over-
+represented due to duplication during PCR. This can complicate analysis of the sequenced library, as the duplciated sequence can falsely 
+suggest higher expression in RNA seq data, duplications in full genome data, over abundance in metagenome data, etc. These copies should
+not make their way into final analyses to obtain accurate results.
+
+Using a reference based aligned SAM file, this program will aim to remove the PCR duplicates to produce cleaner data for downstream analyses.
+____________
+Goals of this program:
+____________
+Remove PCR duplicates from SAM file
+    If duplicates exist, keep the first by default
+Check for duplicates by 
+    Same location/chromosome (header col 4/ col 3)
+    Only uniquely aligned reads (don't consider about secondary alignments)
+    Don't have to look at sequences (similarity has been determined during alignment)
+    Same strandedness Bitwise flag 16 if ((flag &16) == 16):        bitflag in col 2 of header
+    Same Unique molecular index (UMI), found in header
+    account for soft clipping: check CIGAR string 
+        check for 's's in string for clipping on ends
+        1 based left most
+        soft clipping and indels don't consume reference
+        look into if clipping on the other end effects starting position if strand is reverse compliment
+Write non-duplicated reads to a 'cleaned' output file
+Store the duplicates in a separate file
+store reads with unexpected UMIs in a 'misindexed' file
+Output some information about how many duplicates were found
+
+Optional additional goals:
+change bitwise flag to set pcr duplicate? 
+consider same insert size? if paired end (optional challenge)
+
+Additional possibly relevant info:
+kit is strand specific
+
+____________
+PSEUDOCODE
+____________
+
+#initializing some global variables
+chromosome number starts at 0
+open an empty dictionary to store condensed read information 'reads_dict'
+
+def accept user arguments:
+    '''
+    Store information provided by user at command line
+    sample input: ./deduper.py -i $IN_DIR -o $OUT_DIR -u $UMI_FILE
+    output:
+        input_SAM = $IN_DIR
+        output_directory = $OUT_DIR
+        expected_umis = $UMI_FILE
+    '''
+    Return:
+        Input SAM file location
+        Optional boolean to edit bitwise flag of duplicates (if time allows)
+        Ouptut directory
+        Umi file path
+
+Use a bash command to sort the input sam by the chromosome position field (column 2)
+        can either store this output in a temporary sorted SAM that gets deleted at the end
+        Or can just have this overwrite the input SAM
+        #this is to avoid the assumption that the file is sorted by chromosome
+
+def expeceted umis(number of umis):
+    '''
+    Makes a list of expected umis from the accessory file provided at runtime. If no file is provided, the program will not
+    check for misindexed reads. It will still check UMIs when detecting duplicates. 
+    Input: umi file
+    output: a list of the expected UMIs
+    '''
+    if the umi path isn't provided:
+        set a boolean: no umis = TRUE
+        exit this function
+    open UMI file
+    for each line in the umi file:
+        add the line to the umi list
+    close umi file
+    return umi list
+
+def file reader(input file location, umi list, output directory):
+    '''
+    Iterates over the lines of the input SAM, passing information to other functions
+    Write lines from the input to corresponding output files
+    Input: File location of SAM file, umi list, output directory
+    Output: 3 files with reads from the input SAM
+        One file for unique/non-duplicated reads
+        One file for duplicated reads
+        One file for misindexed reads
+    '''
+    Use a bash command to grab unique UMIS from the input SAM and sort them by count
+        store a list of the x most common umis (based on the option provided by the user at runtime. 96 will be default)
+    Open the input Sam file
+    Open an output for unique reads
+    Open an output for duplicates
+    Open an output for misindexed reads
+    while true:
+        # short loop to skip over headerlines without needing to check every line
+        read next line in Input Sam
+        if line does not start with @ (meaning it must be a read):
+            pass line into the disecting function, which returns the type of read (misindexed, unique, etc.)
+            write the line to the correct output file
+            break out of this loop
+        if it does start with @(indicating a header line)
+            write the line to all output files
+    for rest of the lines in input SAM:
+        pass line into disecting function
+        if disecting function says it's a duplicate:
+            write the line to the duplicate output
+            increment a duplicate counter
+        else if it's not a duplicate
+            write the output to the unique output
+        else if the read is misindexed:
+            write the read to a misindexed output
+            increment a misindexed counter
+    close all open files
+
+def line disecter(SAMfile line):
+    '''
+    Breaks apart a SAM file line and extracts relevant info for PCR duplicate detection
+    Sample input: 1 non-header line from a sam file (e.g. NS500451:154:HWKTMBGXX:1:11101:4191:1194:TAGCAAGG	0	2	76718924	36	71M	*	0...)
+    Sample output: whether it's a duplicated read, a unique read, or misindexed
+    '''
+    grab the UMI from the qname (the part after the last colon in the string)
+        if the UMI is not in the list of expected UMIS
+            return that the read is missindexed
+    grab the chromosome info from column 3 of the read
+    if the read's chromosome is not the same as the working chromosome:
+        set the current chromosome as the working chromosome
+        clear the stored data for the previous chromosome
+    grab the cigar string (col 6) and starting position(col 4)
+    if the first letter in cigar string is I, S, H, or P:
+        pass the starting position and the cigar string into the starting position calculator fucntion
+        store that output as the adjusted starting position
+        otherwise, the adjusted starting position is just the starting position
+    grab bitflag, see if read is forward or reverse strand
+        #if the 16 bit is set, the read is a compliment to the reference, otherwise it is the same as the reference 
+    check if the adjusted starting position is already stored in the reads_dict:
+        if not, store the umi and strandedness as a tuple in a dictionary with the adjusted starting position as the key      
+        if it is, check if the umi and strandedness for this read match the values stored in the dictionary
+            if they do match, it's a PCR duplicate.
+            if they don't match, it's unique
+    return whether or not it's duplicate
+
+
+def starting position calculator (position, cigar string)
+    '''
+    Calculates where the read would map to the reference if soft clipping and insertions consumed the reference
+    Sample input: the starting position and cigar string from a single sam file read
+        e.g. (1573, '15S75M')
+    Sample output: the adjusted starting position 
+        e.g. 1558
+    '''
+    parse the cigar string.
+    calculate how many 'non-consuming' bases there are at the start of the string
+        #I, S, H, and P are non-consuming operations
+    calculate a new starting position by subtracting the count of non-consuming bases at the start of the string from the provided starting position
+    return the adjusted starting position
+
+____________
+SAMPLE INPUT
+____________
+
+In the sample input, I have reads that test a number of features of the program:
+    Only 1 read of a set of PCR duplicates should be kept
+    Reads with non-expected UMIs will be set in a file for misindexed reads
+    A duplicate read must match ALL of these with another read to be marked a duplicate:
+        position (adjusted for clipping)
+        direction/strand
+        UMI
+        chromosomes
+
+@Dummy headers
+@SQ	SN:18	LN:90702639
+@SQ	SN:19	LN:61431566
+@SQ	SN:X	LN:171031299
+@SQ	SN:Y	LN:91744698
+@SQ	SN:MT	LN:16299
+1NS500451:154:HWKTMBGXX:1:11101:24260:1121:CTGTTCAC	0	2	76814284	36	71M	*	0	0	TCCACCACAATCTTACCATCCTTCCTCCAGACCACATCGCGTTCTTTGTTCAACTCACAGCTCAAGTACAA	6AEEEEEEAEEAEEEEAAEEEEEEEEEAEEAEEAAEE<EEEEEEEEEAEEEEEEEAAEEAAAEAEEAEAE/	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU
+2NS500451:154:HWKTMBGXX:1:11101:18996:1145:TTCGCCTA	0	2	130171653	36	40M1I30M	*	0	0	GTCTCTTAGTTTATTATAAACCAGCTTCATAGGCCACAGAGGAAAAAGGACTATATACATACAGCCTTTTG	6AEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:53G16	NH:i:1	HI:i:1	NM:i:2	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU
+3NS500451:154:HWKTMBGXX:1:11101:25533:1187:GTTCACCT	0	2	76743835	36	71M	*	0	0	CTTGGTAACTTTCAGAGAATTAGTCACAACTTCTGAAGCAACCACAGTCCATGCAAGTCGACTGGTTTCTC	6AEEEEEEEEEEEEEEEEEEEEEEEAEEEEEEEEEEEEEEEEAEEEEEEE<EEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU
+4NS500451:154:HWKTMBGXX:1:11101:53424:50433:ATCCATGG	0	2	76875957	36	25M470N46M	*	0	0	GTGAAACTCGGTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATT	6<EAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEAEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+5NS500451:154:HWKTMBGXX:1:11101:53424:50433:ATCGAACC	0	2	76875957	36	25M470N46M	*	0	0	GTGAAACTCGGTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATT	6<EAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEAEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+6NS500451:154:HWKTMBGXX:1:11101:347:19169:AACGCCAT	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+7NS500451:154:HWKTMBGXX:1:11101:347:19169:AACGCCAT	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+8NS500451:154:HWKTMBGXX:1:11101:6610:1112:AACGCCAT	0	2	76875969	36	2S13M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+9NS500451:154:HWKTMBGXX:1:11101:6610:1112:BAD_UMI	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+10NS500451:154:HWKTMBGXX:1:11101:53424:50433:ATCCATGG	0	3	76875957	36	25M470N46M	*	0	0	GTGAAACTCGGTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATT	6<EAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEAEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+
+____________
+SAMPLE OUTPUT
+____________
+
+Cleaned output:
+
+@Dummy headers
+@SQ	SN:18	LN:90702639
+@SQ	SN:19	LN:61431566
+@SQ	SN:X	LN:171031299
+@SQ	SN:Y	LN:91744698
+@SQ	SN:MT	LN:16299
+1NS500451:154:HWKTMBGXX:1:11101:24260:1121:CTGTTCAC	0	2	76814284	36	71M	*	0	0	TCCACCACAATCTTACCATCCTTCCTCCAGACCACATCGCGTTCTTTGTTCAACTCACAGCTCAAGTACAA	6AEEEEEEAEEAEEEEAAEEEEEEEEEAEEAEEAAEE<EEEEEEEEEAEEEEEEEAAEEAAAEAEEAEAE/	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU
+2NS500451:154:HWKTMBGXX:1:11101:18996:1145:TTCGCCTA	0	2	130171653	36	40M1I30M	*	0	0	GTCTCTTAGTTTATTATAAACCAGCTTCATAGGCCACAGAGGAAAAAGGACTATATACATACAGCCTTTTG	6AEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:53G16	NH:i:1	HI:i:1	NM:i:2	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU
+3NS500451:154:HWKTMBGXX:1:11101:25533:1187:GTTCACCT	0	2	76743835	36	71M	*	0	0	CTTGGTAACTTTCAGAGAATTAGTCACAACTTCTGAAGCAACCACAGTCCATGCAAGTCGACTGGTTTCTC	6AEEEEEEEEEEEEEEEEEEEEEEEAEEEEEEEEEEEEEEEEAEEEEEEE<EEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU
+4NS500451:154:HWKTMBGXX:1:11101:53424:50433:ATCCATGG	0	2	76875957	36	25M470N46M	*	0	0	GTGAAACTCGGTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATT	6<EAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEAEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+5NS500451:154:HWKTMBGXX:1:11101:53424:50433:ATCGAACC	0	2	76875957	36	25M470N46M	*	0	0	GTGAAACTCGGTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATT	6<EAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEAEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+6NS500451:154:HWKTMBGXX:1:11101:347:19169:AACGCCAT	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+10NS500451:154:HWKTMBGXX:1:11101:53424:50433:ATCCATGG	0	3	76875957	36	25M470N46M	*	0	0	GTGAAACTCGGTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATT	6<EAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAEEAEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+
+
+Duplicate output file
+@Dummy headers
+@SQ	SN:18	LN:90702639
+@SQ	SN:19	LN:61431566
+@SQ	SN:X	LN:171031299
+@SQ	SN:Y	LN:91744698
+@SQ	SN:MT	LN:16299
+7NS500451:154:HWKTMBGXX:1:11101:347:19169:AACGCCAT	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+8NS500451:154:HWKTMBGXX:1:11101:6610:1112:AACGCCAT	0	2	76875969	36	2S13M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+
+Mixindexed output
+@Dummy headers
+@SQ	SN:18	LN:90702639
+@SQ	SN:19	LN:61431566
+@SQ	SN:X	LN:171031299
+@SQ	SN:Y	LN:91744698
+@SQ	SN:MT	LN:16299
+9NS500451:154:HWKTMBGXX:1:11101:6610:1112:BAD_UMI	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
