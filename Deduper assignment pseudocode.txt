@@ -62,11 +62,13 @@ def accept user arguments:
         Optional boolean to edit bitwise flag of duplicates (if time allows)
         Ouptut directory
         Umi file path
+        #I may add an option to select if the CIGAR strings for reverse reads are inverted or not. Pete suggests it depends on what generated the SAM file and you might not be able to assume
 
-Use a bash command to sort the input sam by the chromosome position field (column 2)
+Use samtools to sort the input sam by the chromosome position field (column 2)
         can either store this output in a temporary sorted SAM that gets deleted at the end
         Or can just have this overwrite the input SAM
         #this is to avoid the assumption that the file is sorted by chromosome
+        #can potentially sort by other information for memory efficiency and reducing the amount of stored reads, will revisit later
 
 def expeceted umis(number of umis):
     '''
@@ -94,8 +96,6 @@ def file reader(input file location, umi list, output directory):
         One file for duplicated reads
         One file for misindexed reads
     '''
-    Use a bash command to grab unique UMIS from the input SAM and sort them by count
-        store a list of the x most common umis (based on the option provided by the user at runtime. 96 will be default)
     Open the input Sam file
     Open an output for unique reads
     Open an output for duplicates
@@ -135,28 +135,30 @@ def line disecter(SAMfile line):
         set the current chromosome as the working chromosome
         clear the stored data for the previous chromosome
     grab the cigar string (col 6) and starting position(col 4)
-    if the first letter in cigar string is I, S, H, or P:
-        pass the starting position and the cigar string into the starting position calculator fucntion
-        store that output as the adjusted starting position
-        otherwise, the adjusted starting position is just the starting position
     grab bitflag, see if read is forward or reverse strand
         #if the 16 bit is set, the read is a compliment to the reference, otherwise it is the same as the reference 
+    pass the starting position and the cigar string into the starting position calculator fucntion
+        store that output as the adjusted starting position
+        calculate the length of the read
     check if the adjusted starting position is already stored in the reads_dict:
-        if not, store the umi and strandedness as a tuple in a dictionary with the adjusted starting position as the key      
-        if it is, check if the umi and strandedness for this read match the values stored in the dictionary
+        if not, store the umi, read length, and strandedness as a tuple in a dictionary with the adjusted starting position as the key      
+        if it is, check if the umi, read length, and strandedness for this read match the values stored in the dictionary
             if they do match, it's a PCR duplicate.
             if they don't match, it's unique
     return whether or not it's duplicate
 
 
-def starting position calculator (position, cigar string)
+def starting position calculator (position, cigar string, strandedness)
     '''
     Calculates where the read would map to the reference if soft clipping and insertions consumed the reference
     Sample input: the starting position and cigar string from a single sam file read
-        e.g. (1573, '15S75M')
+        e.g. (1573, '15S75M', forward)
     Sample output: the adjusted starting position 
         e.g. 1558
     '''
+    #May have to sort out reverse vs forward strands. Pete suggested it depends on the input, and there may not be a clear rule.
+    #May have to base it on the file provided somehow, or otherwise just allow the user to set a flag at runtime
+    #If the CIGAR string is reveresed for reverse reads, will have to look at the tail of the string
     parse the cigar string.
     calculate how many 'non-consuming' bases there are at the start of the string
         #I, S, H, and P are non-consuming operations
@@ -232,3 +234,14 @@ Mixindexed output
 @SQ	SN:Y	LN:91744698
 @SQ	SN:MT	LN:16299
 9NS500451:154:HWKTMBGXX:1:11101:6610:1112:BAD_UMI	0	2	76875967	36	15M470N56M	*	0	0	GTGGGATGAGGCGCTCTTTTATATTGAGTTGGGCTGTGCAGGAGTCTTTTCCCACTTCATTGACGGCGTAG	6<EEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE	MD:Z:71	NH:i:1	HI:i:1	NM:i:0	SM:i:36	XQ:i:40	X2:i:0	XO:Z:UU	XS:A:-	XG:Z:A
+
+
+Notes from leslie on Deduper pseudocode
+set faster than list for lookup 
+don't redeclare standard variables in functions that will be called multiple times
+don't call .items(), .keys(), etc. Just plug in key
+Look at per base quality score, not average
+comment rationale for decisions that have multiple approaches
+keep delimiters consistent when writting to header lines
+do logical checks as few times as possible. If you're doing multiple opperations under a logical check, keep them together
+use join to add newlines, don't loop
