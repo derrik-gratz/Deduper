@@ -64,7 +64,8 @@ def accept user arguments:
         Umi file path
         #I may add an option to select if the CIGAR strings for reverse reads are inverted or not. Pete suggests it depends on what generated the SAM file and you might not be able to assume
 
-Use samtools to sort the input sam by the chromosome position field (column 2)
+Use samtools to sort the input sam
+        chrom > umi >seqlen ?
         can either store this output in a temporary sorted SAM that gets deleted at the end
         Or can just have this overwrite the input SAM
         #this is to avoid the assumption that the file is sorted by chromosome
@@ -131,24 +132,24 @@ def line disecter(SAMfile line):
         if the UMI is not in the list of expected UMIS
             return that the read is missindexed
     grab the chromosome info from column 3 of the read
-    if the read's chromosome is not the same as the working chromosome:
-        set the current chromosome as the working chromosome
-        clear the stored data for the previous chromosome
+    #if the read's chromosome is not the same as the working chromosome:
+    #    set the current chromosome as the working chromosome
+    #    clear the stored data for the previous chromosome
     grab the cigar string (col 6) and starting position(col 4)
     grab bitflag, see if read is forward or reverse strand
         #if the 16 bit is set, the read is a compliment to the reference, otherwise it is the same as the reference 
-    pass the starting position and the cigar string into the starting position calculator fucntion
+    pass the starting position and the cigar string into the position calculator fucntion
         store that output as the adjusted starting position
         calculate the length of the read
-    check if the adjusted starting position is already stored in the reads_dict:
-        if not, store the umi, read length, and strandedness as a tuple in a dictionary with the adjusted starting position as the key      
-        if it is, check if the umi, read length, and strandedness for this read match the values stored in the dictionary
+    check the stored read for this umi in reads_dict:
+        if none, store the umi, read length, mapping position, and strandedness in a dictionary with the umi as the key      
+        if it is, check if the mapping position, read length, and strandedness for this read match the values stored in the dictionary
             if they do match, it's a PCR duplicate.
             if they don't match, it's unique
     return whether or not it's duplicate
 
 
-def starting position calculator (position, cigar string, strandedness)
+def position calculator (position, cigar string, strandedness)
     '''
     Calculates where the read would map to the reference if soft clipping and insertions consumed the reference
     Sample input: the starting position and cigar string from a single sam file read
