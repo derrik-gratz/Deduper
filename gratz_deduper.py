@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 #Derrik Gratz Fall 2020
 import argparse
-from os import remove
+import os
+import pysam
 import subprocess
 import re
 
@@ -21,29 +22,39 @@ def get_args():
         same strand (forward or reverse), same unique molecular identifier (UMI), and same read length.\n\
         By default, the first encountered read is kept.\n This program does not currently support paired reads in the input SAM.\n\
         If you want to check for expected UMIs in reads, provide a list of UMIs in a single field text file with one UMI per line and nothing else.\n\
-        Expected UMI checking is not necessary, and duplicate checking will still look for identical barcodes.')
-    parser.add_argument('-u', '--umi', type=str, help='Absolute path of file containing expected UMIs', default=None)
-    parser.add_argument('-i', '--input', type=str, help='Absolute path of SAM file of aligned reads', default=test_directory + 'test.sam')
-    parser.add_argument('-o', '--output', type=str, help='Absolute path of directory to store output', default=test_directory + 'deduper_output')
+        Expected UMI checking is not necessary, and duplicate checking will still look for identical barcodes.\n\
+        A pre-sorted SAM can be passed in, or if the "-s" flag is not set, the program will attempt to sort the input SAM')
+    parser.add_argument('-i', '--input', type=str, help='Absolute path of SAM file of aligned reads', required=True)
+    parser.add_argument('-o', '--output', type=str, help='Absolute path of directory to store output', default=os.getcwd())
+    parser.add_argument('-u', '--umi', type=str, help='Absolute path of file containing expected UMIs, optional for duplicate checking, but needed to check for misindexing', default=None)
     #add optional arg to change how duplicates are handled?
-    parser.add_argument('-n', '--name',type=str, help='Optional prefix to name output sam files', default=None)
-    parser.add_argument('-p', '--paired', help="Flag to denote input sam has paired reads", action="store_true")
+    parser.add_argument('-n', '--name', type=str, help='Optional prefix to name output sam files', default=None)
+    parser.add_argument('--paired', help="Flag to denote input sam has paired reads, currently causes program to exit", action="store_true")
+    parser.add_argument('--sorted', help="Flag to denote input sam is already sorted by chromosome", action="store_true")
     return parser.parse_args()
 
 
-def sam_manipulation(input_sam, output_dir):
+def sam_manipulation(input_sam, output_dir, sorting):
     '''
     Sorts the input sam file by read length, chromosome, then bitflag.
     Produces an intermediate sorted sam file that is used for duplicate checking, but is later deleted
     '''
-    print("sorting the input file, this could take a while")
-    sorted_file = output_dir + "sorted_input.sam"
-    #sorting is performed with basic unix commands
-    #adds the length of the read to the beginning of the file to facilitate sorting. This is later removed
-    command = "cat {} | awk '{{print length($10)".format(input_sam) +'"\t"'+"$0;}' | unexpand -a" + '| sort -n -k 1,1 -k 4,4 -k 3,3 | cut -f 1 --complement | grep -v "^@" > {}'.format(sorted_file)
-    subprocess.call(command, shell=True)
-    print("Sorting complete!")
-    return sorted_file
+    #check runtime flag first
+    if not sorting:
+        print("sorting the input file, this could take a while")
+        sorted_file = output_dir + "sorted_input.sam"
+        try:
+            pysam.sort("-o", sorted_file, input_sam)
+        except:
+            #incase pysam isn't available on that computer
+            print('An error occured with pysam sort. Resorting to UNIX sort')
+            command = "cat {}".format(input_sam) + ' | unexpand -a | sort -n -k 3 | grep -v "^@" > {}'.format(sorted_file)
+            subprocess.call(command, shell=True)
+        print("Sorting complete!")
+        return sorted_file
+    else:
+        print("Input file has been designated as sorted.")
+        return input_sam
 
 
 umi_checking = True
@@ -82,34 +93,38 @@ def cigar_adjustments(cigar, pos, strand):
             if 'S' in stogies[0]:
                 #Leading S indicates soft clipping, adjust by the number attached to S
                 offset = int(re.search('\d+', stogies[0])[0])
-                corrected_starting_pos = pos - offset
+                corrected_starting_pos -= offset
         elif strand == 'reverse':
-            #reverse strand has inverted cigar string, need to look at end of cigar
+            #need to calculate the 5' starting position from the leftmost provided position
+            #reverse strand has inverted cigar string, need to look at end of cigar for soft clipping
             if 'S' in stogies[-1]:
                 offset = int(re.search('\d+', stogies[-1])[0])
-                corrected_starting_pos = pos - offset
-        #might be able to remove this if can guarantee bitflags are set
-        elif strand == 'undefined':
-            #treating it as forward read for soft clipping purposes
-            if 'S' in stogies[0]:
-                offset = int(re.search('\d+', stogies[0])[0])
-                corrected_starting_pos = pos - offset
+                corrected_starting_pos += offset
+            #looking for other consuming bases
+            for stogie in stogies:
+                if 'D' in stogie or 'N' in stogie or 'M' in stogies:
+                    offset = int(re.search('\d+', stogie)[0])
+                    corrected_starting_pos += offset
+                #currently unclear how best to implement this or if it's needed. Suspended functionality for now but leaving for posterity.
+                #elif 'I' in stogie:
+                #    offset = int(re.search('\d+', stogie)[0])
+                #    corrected_starting_pos -= offset
     except IndexError:
-        #Error: Improper cigar string. Can't check for soft clipping. Default to provided position
+        #Can't check for soft clipping. Default to provided position
+        print('Error: unexpected cigar string {}. Cannot adjust starting position for soft clipping.'.format(cigar))
         return pos
+    #if strand is undefined (neither forward nor reverse flag set), it just return starting position too
     return corrected_starting_pos
 
 
 unique_reads = set()
-current_seqlen = 0
-current_chrom = 0
+current_chrom = str(0)
 def line_parser(line, expected_umis):
     '''
     Breaks apart a SAM file line and extracts relevant info for PCR duplicate detection
     Sample input: 1 non-header line from a sam file (e.g. NS500451:154:HWKTMBGXX:1:11101:4191:1194:TAGCAAGG	0	2	76718924	36	71M	*	0...)
     Sample output: whether it's a duplicated read, a unique read, or misindexed
     '''
-    global current_seqlen
     global current_chrom
     global unique_reads
     global umi_checking
@@ -123,12 +138,11 @@ def line_parser(line, expected_umis):
                 return 'misindexed'
         bitflag = int(fields[1])
         #get strand from bitflag
-        if ((bitflag & 16)==16):
+        if ((bitflag & 32)==32):
             strand = 'forward'
-        elif ((bitflag & 32)==32):
+        elif ((bitflag & 16)==16):
             strand = 'reverse'
         else:
-            #may be able to remove 
             #print('Error: bitflag has neither forward nor reverse strand set')
             strand = 'undefined'
         chromosome = fields[2]
@@ -138,13 +152,6 @@ def line_parser(line, expected_umis):
             current_chrom = chromosome
         pos = int(fields[3])
         cigar = fields[5]
-        tlen = fields[8]
-        seq_len = len(fields[9])
-        if seq_len != current_seqlen:
-            #the file has been sorted by the length of the read sequence, so if no sequences remain of that length, it can be assumed
-            #there would be no more duplicates. The set of encountered reads can be reset. 
-            unique_reads.clear()
-            current_seqlen = seq_len
         adjusted_positions = cigar_adjustments(cigar, pos, strand)
         unique_identifiers = strand + str(chromosome) + str(adjusted_positions) + umi
         if unique_identifiers in unique_reads:
@@ -153,6 +160,8 @@ def line_parser(line, expected_umis):
             unique_reads.add(unique_identifiers)
             return 'unique'
     except IndexError:
+        print('Error in line, cannot check for uniqueness')
+        print(line)
         #Something about this read is unexpected. Output to unqiue by default
         return 'unique'
 
@@ -171,15 +180,16 @@ def get_headers(input_sam):
             elif checks < 40:
                 #check a few reads to make sure the file isn't paired end
                 fields = line.split('\t')
-                if ((int(fields[1]) % 1) == 1):
+                if ((int(fields[1]) & 1) == 1):
                     #first field of bitflag is true, read is paired
-                    print("It looks like the input sam has paired reads. This program does not currently support paired-read SAM files. The program will now close.")
-                    fh.close()
-                    quit
+                    print("\nIt looks like the input sam has paired reads. This program does not currently support paired-read SAM files. The program may not remove duplicates as would be expected with paried end reads, but it will attempt to remove duplicates while treating reads as single end.")
+                    #quit()
+                    break
                 checks += 1
             else:
-                fh.close()
-                return headers
+                break
+        fh.close()
+        return headers
 
 
 def main():
@@ -197,7 +207,11 @@ def main():
     args = get_args()
     #Not ready for paired reads yet
     if args.paired:
-        print("It looks like the input sam has paired reads. This program does not currently support paired-read SAM files. The program will now close.")
+        print("It looks like the paired flag is set. This program does not currently support paired-read SAM files.\n\
+            If you wish to attempt deduplication on the file, you can pass it in again without the --paired flag.\n\
+            This will treat the file as single end for the purposes of duplication checks.\n\
+            This is not recommended, as the deduplication will not be accurate, but the program will still be functional.\n\
+            The program will now close.")
         quit()
     #Grab expected umis from the command line (if applicable)
     expected_umis = grab_umis(args.umi)
@@ -207,7 +221,7 @@ def main():
     if args.output[-1] != '/':
         args.output += '/'
     headers = get_headers(args.input)
-    sorted_sam = sam_manipulation(args.input, args.output)
+    sorted_sam = sam_manipulation(args.input, args.output, args.sorted)
     #opening output files
     if args.name != None:
         output_prefix = args.output + args.name + "_"
@@ -231,19 +245,22 @@ def main():
         print("Starting PCR duplicate checks")
         #no headers in the sorted file
         for line in fh:
-            results = line_parser(line, expected_umis)
-            outputs[results].write(line)
-            counts[results] += 1
-            ln += 1
-            if ln % 1000000 == 0:
-                print("Running: on read " + str(ln))
+            if not line.startswith('@'):
+                #results are whether the line is a duplicate, misindexed, or unique
+                results = line_parser(line, expected_umis)
+                outputs[results].write(line)
+                counts[results] += 1
+                ln += 1
+                if ln % 1000000 == 0:
+                    print("Running: on read " + str(ln))
     for file in outputs:
         outputs[file].close()
     print('\nDuplication check complete! See summary below')
     for category in counts:
-        print('Number of {} reads: {}   {:.2%}'.format(category, counts[category], counts[category]/ln))
-    remove(sorted_sam)
+        print('Number of {} reads:\t{}\t{:.2%}'.format(category, counts[category], counts[category]/ln))
+    if not args.sorted:
+        os.remove(sorted_sam)
     if umi_checking == False:
-        remove(output_prefix + 'misindexed.sam')
+        os.remove(output_prefix + 'misindexed.sam')
 
 main()
