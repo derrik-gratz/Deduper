@@ -24,13 +24,13 @@ def get_args():
         If you want to check for expected UMIs in reads, provide a list of UMIs in a single field text file with one UMI per line and nothing else.\n\
         Expected UMI checking is not necessary, and duplicate checking will still look for identical barcodes.\n\
         A pre-sorted SAM can be passed in, or if the "-s" flag is not set, the program will attempt to sort the input SAM')
-    parser.add_argument('-i', '--input', type=str, help='Absolute path of SAM file of aligned reads', required=True)
+    parser.add_argument('-f', '--file', type=str, help='Absolute path of SAM file of aligned reads', required=True)
     parser.add_argument('-o', '--output', type=str, help='Absolute path of directory to store output', default=os.getcwd())
     parser.add_argument('-u', '--umi', type=str, help='Absolute path of file containing expected UMIs, optional for duplicate checking, but needed to check for misindexing', default=None)
     #add optional arg to change how duplicates are handled?
     parser.add_argument('-n', '--name', type=str, help='Optional prefix to name output sam files', default=None)
-    parser.add_argument('--paired', help="Flag to denote input sam has paired reads, currently causes program to exit", action="store_true")
-    parser.add_argument('--sorted', help="Flag to denote input sam is already sorted by chromosome", action="store_true")
+    parser.add_argument('-p', '--paired', help="Flag to denote input sam has paired reads, currently causes program to exit", action="store_true")
+    parser.add_argument('-s', '--sorted', help="Flag to denote input sam is already sorted by chromosome", action="store_true")
     return parser.parse_args()
 
 
@@ -102,7 +102,8 @@ def cigar_adjustments(cigar, pos, strand):
                 corrected_starting_pos += offset
             #looking for other consuming bases
             for stogie in stogies:
-                if 'D' in stogie or 'N' in stogie or 'M' in stogies:
+                if (re.search('\D', stogie)[0]) in 'DNM=X':
+                #expanded funtionality for newer SAM cigars
                     offset = int(re.search('\d+', stogie)[0])
                     corrected_starting_pos += offset
                 #currently unclear how best to implement this or if it's needed. Suspended functionality for now but leaving for posterity.
@@ -220,8 +221,8 @@ def main():
     #making sure the directory ends in a slash
     if args.output[-1] != '/':
         args.output += '/'
-    headers = get_headers(args.input)
-    sorted_sam = sam_manipulation(args.input, args.output, args.sorted)
+    headers = get_headers(args.file)
+    sorted_sam = sam_manipulation(args.file, args.output, args.sorted)
     #opening output files
     if args.name != None:
         output_prefix = args.output + args.name + "_"
