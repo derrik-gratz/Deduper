@@ -41,7 +41,7 @@ def sam_manipulation(input_sam, output_dir, sorting):
     '''
     #check runtime flag first
     if not sorting:
-        print("sorting the input file, this could take a while")
+        print("Sorting the input file, this could take a while")
         sorted_file = output_dir + "sorted_input.sam"
         try:
             pysam.sort("-o", sorted_file, input_sam)
@@ -68,7 +68,7 @@ def grab_umis(umi):
     global umi_checking
     umis = []
     if umi == None:
-        print("No UMI file provided, skipping UMI checking")
+        print("No UMI file provided. The program will not check for misindexed reads.")
         umi_checking = False
         return None
     with open(umi, "r") as fh:
@@ -263,5 +263,4 @@ def main():
         os.remove(sorted_sam)
     if umi_checking == False:
         os.remove(output_prefix + 'misindexed.sam')
-
 main()
